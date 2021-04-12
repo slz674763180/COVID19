@@ -1,7 +1,5 @@
-import importlib
 import torch
 import torch.nn as nn
-import torchvision
 import torch.nn.functional as F
 
 
@@ -149,6 +147,26 @@ class ResNet(nn.Module):
         return [x, x1, x2, x3, x4]
 
 
+class PSPModule(nn.Module):
+    def __init__(self, features, out_features=512, sizes=(1, 2, 3, 6)):
+        super().__init__()
+        self.stages = []
+        self.stages = nn.ModuleList([self._make_stage(features, size) for size in sizes])
+        self.bottleneck = nn.Conv2d(features * (len(sizes) + 1), out_features, kernel_size=1)
+        self.relu = nn.ReLU()
+
+    def _make_stage(self, features, size):
+        prior = nn.AdaptiveAvgPool2d(output_size=(size, size))
+        conv = nn.Conv2d(features, features, kernel_size=1, bias=False)
+        return nn.Sequential(prior, conv)
+
+    def forward(self, feats):
+        h, w = feats.size(2), feats.size(3)
+        priors = [F.upsample(input=stage(feats), size=(h, w), mode='bilinear') for stage in self.stages] + [feats]
+        bottle = self.bottleneck(torch.cat(priors, 1))
+        return self.relu(bottle)
+
+
 class res(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
@@ -227,8 +245,8 @@ class RPLFUnet(nn.Module):
     def forward(self, x, with_output_feature_map=False):
         down_x = self.ResNet(x)
         put_x = []
-        for i in range(5):
-            put_x.append(self.out[i](down_x[i]))
+        # for i in range(5):
+        #     put_x.append(self.out[i](down_x[i]))
 
         x = self.bridge(down_x[4])
 
@@ -243,10 +261,12 @@ class RPLFUnet(nn.Module):
 
         gs = []
         xs = []
+        xs_256 = []
         for i in range(len(after_x)):
             xx, g = self.fout[i](after_x[4 - i])
             gs.append(g)
             xs.append(xx)
+            xs_256.append(F.sigmoid(self.up(xx)))
         other = gs[0] * xs[0]
         for i in range(1, len(gs)):
             other += gs[i] * xs[i]
@@ -257,4 +277,4 @@ class RPLFUnet(nn.Module):
         x = others + x1s + x
 
         x = self.out1(x)
-        return put_x, F.sigmoid(x)
+        return put_x, F.sigmoid(x), xs_256
